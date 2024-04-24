@@ -1,0 +1,60 @@
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import sum, year, month
+
+# Create a SparkSession
+spark = SparkSession.builder \
+    .appName("SQLToPySparkConversion") \
+    .getOrCreate()
+
+# Assuming CTE1_c360_account_master_apt and CTE2_enriched_account_snapshot are already loaded as DataFrames
+# If not, load them into DataFrames using spark.read.table() or spark.sql() functions
+
+# Assuming $load_date and $snapshot_date are available as variables
+load_date = "your_load_date_value"
+snapshot_date = "your_snapshot_date_value"
+
+# Apply the SQL logic using PySpark DataFrame operations
+result_df = (spark.table("CTE1_c360_account_master_apt").alias("a")
+             .join(spark.table("CTE2_enriched_account_snapshot").alias("b"),
+                   (F.lpad(F.col("a.account_number"), 20, '0') == F.lpad(F.col("b.account_number"), 20, '0')),
+                   "LEFT")
+             .groupBy("client_mdm_id")
+             .agg(
+                 sum(F.when((F.col("account_source") == "aum") & (F.col("account_discretionary_flag") == 'Y'), F.col("account_balance_end"))).alias("aum_balance"),
+                 sum(F.when((F.col("account_source") == "aum") & (F.col("account_discretionay_flag") == 'N'), F.col("account_balance_end"))).alias("aua_balance"),
+                 sum(F.when(F.col("account_source") == "deposit", F.col("account_balance_end"))).alias("deposit_balance"),
+                 # Add similar sum aggregation for other columns
+                 # Similarly, add aggregation for other columns
+             )
+             .selectExpr("client_mdm_id",
+                         "aum_balance",
+                         "aua_balance",
+                         "deposit_balance",
+                         # Add similar selectExpr for other columns
+                         # Similarly, add selectExpr for other columns
+                         )
+             .join(spark.table("aaihd01p_aai_mdl_c360_client_master_apt").alias("y"),
+                   (F.col("x.client_mdm_id") == F.col("y.entity_mdm_id")),
+                   "LEFT")
+             .join(spark.table("aaihd01p_aai_pub_awp_client_profile").alias("z"),
+                   (F.col("x.client_mdm_id") == F.col("z.client_mdm_id")),
+                   "LEFT")
+             .join(spark.table("aaihd01p_aai_pub.awp_service_relationship").alias("h"),
+                   (F.col("x.service_rel_edge_id") == F.col("h.service_rel_edge_id")),
+                   "LEFT")
+             .join(spark.table("aaihd01p_aai_mdl_c360_client_master_apt")
+                   .select("entity_mdm_id", "relationship_id")
+                   .where((F.year(F.col("yr")) == F.year(F.lit(snapshot_date))) & (F.month(F.col("mnth")) == F.month(F.lit(snapshot_date)))),
+                   (F.col("x.client_mdm_id") == F.col("entity_mdm_id")),
+                   "LEFT")
+             .selectExpr("x.*", "relationship_id", "client_prof_key", "service_rel_key",
+                         "year($SNAPSHOT_DATE) as yr",
+                         "month($SNAPSHOT_DATE) as mnth")
+             .withColumn("aai_load_date", F.lit(load_date))
+             .withColumn("snapshot_date", F.lit(snapshot_date))
+             )
+
+# Show the result DataFrame
+result_df.show()
+
